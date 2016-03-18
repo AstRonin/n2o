@@ -38,4 +38,8 @@
 
 -record(ftp,     { sid, filename, meta, size, offset, block, data, status }).
 
+% HTTP
+
+-record(http,     { url, method, body, has_body = false, body_length = 0 }).
+
 -endif.

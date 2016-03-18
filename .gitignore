@@ -15,3 +15,5 @@ samples/deps
 **/ebin/**
 **/Mnesia*/**
 test/bert.data
+.idea/
+n2o.iml

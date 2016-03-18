@@ -16,6 +16,7 @@ stop(_)    -> ok.
 init([]) -> users:init(), syn:init(),
             users:populate(?USERS),
             kvs:join(),
+            fcgi(),
             {ok, {{one_for_one, 5, 10}, [spec()]}}.
 
 spec()   -> ranch:child_spec(http, 100, ranch_tcp, port(), cowboy_protocol, env()).
@@ -24,6 +25,11 @@ static() ->   { dir, "apps/review/priv/static", mime() }.
 n2o()    ->   { dir, "deps/n2o/priv",           mime() }.
 mime()   -> [ { mimetypes, cow_mimetypes, all   } ].
 port()   -> [ { port, wf:config(n2o,port,8000)  } ].
+fcgi()   ->
+    case wf:config(n2o_fcgi, root) of
+        undefined -> skip;
+        _ -> n2o_fcgi:init()
+    end.
 points() -> cowboy_router:compile([{'_', [
 
     {"/static/[...]",       n2o_static,  static()},
