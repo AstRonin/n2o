@@ -39,10 +39,10 @@ send(Params) ->
     ex_fcgi:end_request(fcgi, Ref),
 
     Ret = ret(),
-
-    set_header_to_cowboy(wf:state(response_headers), byte_size(Ret)),
+    RetH = wf:state(n2o_fcgi_response_headers),
+    set_header_to_cowboy(RetH, byte_size(Ret)),
     terminate(),
-    Ret.
+    {Ret, RetH}.
 
 %% ======================= Prepare Request ==========================
 
@@ -77,13 +77,15 @@ get_params(Params) ->
         path_info_headers(Root, FPathInfo) ++
         HHttps ++
         http_headers() ++
+        external_headers(Params) ++
         post_headers(Params, Method).
 
 make_url_parts(#http{url = Url}) ->
     case Url of
         undefined -> put(url_parts, #url_parts{});
         U ->
-            case http_uri:parse(wf:to_list(U), [{scheme_defaults, [{ws, 80}, {wss, 443}]}]) of
+            case http_uri:parse(wf:to_list(U), [{scheme_defaults, [
+                {http,80},{https,443},{ftp,21},{ssh,22},{sftp,22},{tftp,69},{ws,80},{wss,443}]}]) of
                 {ok, {Scheme, UserInfo, Host, Port, Path, Query}} ->
                     R = #url_parts{scheme = Scheme, userInfo = UserInfo, host = Host, port = Port, path = Path, query = Query},
                     put(url_parts, R);
@@ -92,6 +94,8 @@ make_url_parts(#http{url = Url}) ->
             end
     end.
 
+external_headers(#http{headers = Hs}) ->
+    case Hs of undefined -> []; _ -> Hs end.
 external_host_header() ->
     case ?URL_PARTS#url_parts.host of
         undefined -> undefined;
@@ -244,8 +248,8 @@ stdout([{stdout, Bin} | Messages], Acc) ->
     case H of
         [] -> skip;
         _ ->
-            RespH1 = case wf:state(response_headers) of undefined -> []; RespH -> RespH end,
-            wf:state(response_headers, RespH1 ++ H)
+            RespH1 = case wf:state(n2o_fcgi_response_headers) of undefined -> []; RespH -> RespH end,
+            wf:state(n2o_fcgi_response_headers, RespH1 ++ H)
     end,
     stdout(Messages, <<Acc/binary, B/binary>>);
 stdout([{end_request, request_complete, 0}], Acc) ->
@@ -307,4 +311,4 @@ header_key_to_lower(Bit, _Acc) ->
     wf:to_binary(string:to_lower(wf:to_list(Bit))).
 
 terminate() ->
-    wf:state(response_headers, []).
+    wf:state(n2o_fcgi_response_headers, []).

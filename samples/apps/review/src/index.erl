@@ -61,9 +61,9 @@ event(#ftp{sid=Sid,filename=Filename,status={event,stop}}=Data) ->
 
 event(#http{url = _Url, method = _Method, body = _Body} = Http) ->
     wf:info(?MODULE,"Http data: ~p~n",[Http]),
-    Ret = n2o_fcgi:send(Http),
+    {Ret, Headers} = n2o_fcgi:send(Http),
     wf:info(?MODULE,"Receive data from FastCGI: ~p~n",[Ret]),
-    wf:wire("console.log('"++wf:jse(wf:to_list(Ret))++"');");
+    wf:wire("http.back("++wf:to_list(Ret)++", "++wf:to_list(jsone:encode(Headers))++")");
 
 event(Event) ->
     wf:info(?MODULE,"Event: ~p", [Event]),
