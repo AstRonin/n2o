@@ -13,7 +13,9 @@
 
 -record(url_parts, {scheme, userInfo, host, port, path, query}).
 
-%% ==================== API ==========================
+%% ===========================================================
+%% API
+%% ===========================================================
 
 init() ->
     case ex_fcgi:start(fcgi, wf:config(n2o_fcgi, address, localhost), wf:config(n2o_fcgi, port, ?DEF_FCGI_PORT)) of
@@ -31,7 +33,7 @@ send(Params) ->
     {Body, P1} = case bs(Params) of {ok, B, NewP} -> {B, NewP}; _ -> {<<>>, Params} end,
     FCGIParams = get_params(P1),
 
-    {ok, Ref} = ex_fcgi:begin_request(fcgi, responder, FCGIParams, 3000),
+    {ok, Ref} = ex_fcgi:begin_request(fcgi, responder, FCGIParams, wf:config(n2o_fcgi, timeout, 60000)),
     case P1#http.has_body of
         true -> ex_fcgi:send(fcgi, Ref, Body);
         _ -> ok
@@ -44,7 +46,9 @@ send(Params) ->
     terminate(),
     {Ret, RetH}.
 
-%% ======================= Prepare Request ==========================
+%% ===========================================================
+%% Prepare Request
+%% ===========================================================
 
 -spec get_params(Params :: #http{}) -> term().
 get_params(Params) ->
@@ -61,19 +65,19 @@ get_params(Params) ->
     HHttps = [],
 
     [{<<"GATEWAY_INTERFACE">>, ?PROTO_CGI},
-        {<<"QUERY_STRING">>, QS},
-        {<<"REMOTE_ADDR">>, wf:to_binary(inet:ntoa(PeerIP))},
-        {<<"REMOTE_PORT">>, wf:to_binary(PeerPort)},
-        {<<"REQUEST_METHOD">>, Method},
-        {<<"REQUEST_URI">>, <<Path/binary, (case QS of <<>> -> <<>>; V -> <<"?", V/binary>> end)/binary>>},
-        {<<"DOCUMENT_ROOT">>, wf:to_binary(Root)},
-        {<<"SCRIPT_FILENAME">>, wf:to_binary(wf:config(n2o_fcgi, root, "") ++ FPath ++ "/" ++ FScript)},
-        {<<"SCRIPT_NAME">>, wf:to_binary("/" ++ FScript)},
-        %% {<<"SERVER_ADDR">>, <<"">>}, % I don't now how cowboy return self ip
-        {<<"SERVER_NAME">>, wf:to_binary(wf:config(n2o_fcgi, server_name, wf:config(n2o_fcgi, address, "")))},
-        {<<"SERVER_PORT">>, wf:to_binary(Port)},
-        {<<"SERVER_PROTOCOL">>, ?PROTO_HTTP},
-        {<<"SERVER_SOFTWARE">>, <<"cowboy">>}] ++
+     {<<"QUERY_STRING">>, QS},
+     {<<"REMOTE_ADDR">>, wf:to_binary(inet:ntoa(PeerIP))},
+     {<<"REMOTE_PORT">>, wf:to_binary(PeerPort)},
+     {<<"REQUEST_METHOD">>, Method},
+     {<<"REQUEST_URI">>, <<Path/binary, (case QS of <<>> -> <<>>; V -> <<"?", V/binary>> end)/binary>>},
+     {<<"DOCUMENT_ROOT">>, wf:to_binary(Root)},
+     {<<"SCRIPT_FILENAME">>, wf:to_binary([wf:config(n2o_fcgi, root, ""), FPath, "/", FScript])},
+     {<<"SCRIPT_NAME">>, wf:to_binary(["/", FScript])},
+     %% {<<"SERVER_ADDR">>, <<"">>}, % I don't now how cowboy return self ip
+     {<<"SERVER_NAME">>, wf:to_binary(wf:config(n2o_fcgi, server_name, wf:config(n2o_fcgi, address, "")))},
+     {<<"SERVER_PORT">>, wf:to_binary(Port)},
+     {<<"SERVER_PROTOCOL">>, ?PROTO_HTTP},
+     {<<"SERVER_SOFTWARE">>, <<"cowboy">>}] ++
         path_info_headers(Root, FPathInfo) ++
         HHttps ++
         http_headers() ++
@@ -101,7 +105,7 @@ external_host_header() ->
         undefined -> undefined;
         Host ->
             Port = case ?URL_PARTS#url_parts.port of P when P =:= 80 orelse P =:= 443 -> ""; P1 -> ":" ++ wf:to_list(P1) end,
-            {<<"host">>, wf:to_binary(Host ++ Port)}
+            {<<"host">>, wf:to_binary([Host, Port])}
     end.
 external_ajax_header() ->
     case ?URL_PARTS#url_parts.host of
@@ -113,14 +117,14 @@ post_headers(#http{has_body = Has, body_length = Len}, Method) ->
     case Has of
         true when Method =:= <<"POST">>; Method =:= <<"PUT">>; Method =:= <<"DELETE">> ->
             [{"CONTENT_TYPE", <<"application/x-www-form-urlencoded">>},
-                {"CONTENT_LENGTH", wf:to_binary(Len)}];
+             {"CONTENT_LENGTH", wf:to_binary(Len)}];
         _ -> []
     end.
 path_info_headers(Root, FPathInfo) ->
     case FPathInfo of
         [] -> [];
         _ -> [{<<"PATH_INFO">>, wf:to_binary(FPathInfo)},
-            {<<"PATH_TRANSLATED">>, wf:to_binary(Root ++ FPathInfo)}]
+              {<<"PATH_TRANSLATED">>, wf:to_binary([Root, FPathInfo])}]
     end.
 method(Params) ->
     case Params#http.method of undefined -> {M, _} = cowboy_req:method(?REQ), M; V -> wf:to_binary(string:to_upper(wf:to_list(V))) end.
@@ -147,7 +151,7 @@ bs(#http{body = Body} = P) ->
         E when E =:= <<>> orelse E =:= <<"">> orelse E =:= "" ->
             {empty, <<>>, P};
         B -> P2 = P#http{has_body = true, body_length = byte_size(B)},
-            {ok, B, P2}
+             {ok, B, P2}
     end.
 
 -spec http_headers() -> [tuple()].
@@ -227,7 +231,9 @@ rewrite(Subject, [RewRule|H]) ->
 rewrite(Subject, []) ->
     {false, Subject}.
 
-%% ========================== Response ========================
+%% ===========================================================
+%% Response
+%% ===========================================================
 
 ret() ->
     receive
@@ -312,3 +318,4 @@ header_key_to_lower(Bit, _Acc) ->
 
 terminate() ->
     wf:state(n2o_fcgi_response_headers, []).
+
