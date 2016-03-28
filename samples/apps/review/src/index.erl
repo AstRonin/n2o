@@ -61,9 +61,11 @@ event(#ftp{sid=Sid,filename=Filename,status={event,stop}}=Data) ->
 
 event(#http{url = _Url, method = _Method, body = _Body} = Http) ->
     wf:info(?MODULE,"Http data: ~p~n",[Http]),
-    {Ret, Headers} = n2o_fcgi:send(Http),
+    {Ret, Status, Headers} = n2o_fcgi:send(Http),
     wf:info(?MODULE,"Receive data from FastCGI: ~p~n",[Ret]),
-    wf:wire("http.back("++wf:to_list(Ret)++", "++wf:to_list(jsone:encode(Headers))++")");
+    Ret1 = re:replace(wf:to_list(Ret), "'", "\\\\&", [{return, list}, global]), % conflict of quotes in js
+    Ret2 = re:replace(Ret1, "\n", "\\\\&", [{return, list}, global]), % conflict of New Line in js
+    wf:wire("http.back('"++Ret2++"', "++wf:to_list(Status)++", "++wf:to_list(jsone:encode(Headers))++")");
 
 event(Event) ->
     wf:info(?MODULE,"Event: ~p", [Event]),

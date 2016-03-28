@@ -9,6 +9,7 @@
 -define(PROTO_HTTP, <<"HTTP/1.1">>).
 -define(DEF_FCGI_PORT, 9000).
 -define(DEF_RESP_STATUS, 200).
+
 -define(URL_PARTS, (get(url_parts))).
 
 -record(url_parts, {scheme, userInfo, host, port, path, query}).
@@ -30,6 +31,7 @@ stop() ->
 send(Params) ->
     wf:state(status, 200),
     make_url_parts(Params),
+    vhosts(),
     {Body, P1} = case bs(Params) of {ok, B, NewP} -> {B, NewP}; _ -> {<<>>, Params} end,
     FCGIParams = get_params(P1),
 
@@ -44,11 +46,28 @@ send(Params) ->
     RetH = wf:state(n2o_fcgi_response_headers),
     set_header_to_cowboy(RetH, byte_size(Ret)),
     terminate(),
-    {Ret, RetH}.
+    %% @todo Return headers from cgi because cowboy don't give access to resp_headers
+    {Ret, wf:state(status), RetH}.
 
 %% ===========================================================
 %% Prepare Request
 %% ===========================================================
+
+vhosts() ->
+    Vs = wf:config(n2o_fcgi, vhosts, []), vhosts(Vs).
+vhosts([H|T]) ->
+    S = proplists:get_value(server_name, H, ""),
+    A = proplists:get_value(aliase, H, ""),
+    case wf:to_list(host()) of
+        Host when Host =:= S orelse Host =:= A ->
+            wf:state(vhost, H), ok;
+        _ ->
+            vhosts(T)
+    end;
+vhosts([]) -> wf:state(vhost, []), ok.
+
+vhost(Key, Def) ->
+    proplists:get_value(Key, wf:state(vhost), Def).
 
 -spec get_params(Params :: #http{}) -> term().
 get_params(Params) ->
@@ -57,31 +76,32 @@ get_params(Params) ->
     Port = port(),
     Path = path(),
     QS = qs(),
-    Root = wf:config(n2o_fcgi, root, ""),
-    DefScript = wf:to_binary(wf:config(n2o_fcgi, index, "index.php")),
+
+    Root = vhost(root, ""),
+    DefScript = wf:to_binary(vhost(index, "index.php")),
     {FPath, FScript, FPathInfo} = final_path(Path, DefScript),
+
     %% @todo Waiting of https://github.com/ninenines/cowboy/issues/950
     %% HHttps = case HTTPS ? of <<"https">> -> [{<<"HTTPS">>, <<"'on'">>}]; _ -> [] end,
     HHttps = [],
 
     [{<<"GATEWAY_INTERFACE">>, ?PROTO_CGI},
-     {<<"QUERY_STRING">>, QS},
-     {<<"REMOTE_ADDR">>, wf:to_binary(inet:ntoa(PeerIP))},
-     {<<"REMOTE_PORT">>, wf:to_binary(PeerPort)},
-     {<<"REQUEST_METHOD">>, Method},
-     {<<"REQUEST_URI">>, <<Path/binary, (case QS of <<>> -> <<>>; V -> <<"?", V/binary>> end)/binary>>},
-     {<<"DOCUMENT_ROOT">>, wf:to_binary(Root)},
-     {<<"SCRIPT_FILENAME">>, wf:to_binary([wf:config(n2o_fcgi, root, ""), FPath, "/", FScript])},
-     {<<"SCRIPT_NAME">>, wf:to_binary(["/", FScript])},
-     %% {<<"SERVER_ADDR">>, <<"">>}, % I don't now how cowboy return self ip
-     {<<"SERVER_NAME">>, wf:to_binary(wf:config(n2o_fcgi, server_name, wf:config(n2o_fcgi, address, "")))},
-     {<<"SERVER_PORT">>, wf:to_binary(Port)},
-     {<<"SERVER_PROTOCOL">>, ?PROTO_HTTP},
-     {<<"SERVER_SOFTWARE">>, <<"cowboy">>}] ++
+        {<<"QUERY_STRING">>, QS},
+        {<<"REMOTE_ADDR">>, wf:to_binary(inet:ntoa(PeerIP))},
+        {<<"REMOTE_PORT">>, wf:to_binary(PeerPort)},
+        {<<"REQUEST_METHOD">>, Method},
+        {<<"REQUEST_URI">>, <<Path/binary, (case QS of <<>> -> <<>>; V -> <<"?", V/binary>> end)/binary>>},
+        {<<"DOCUMENT_ROOT">>, wf:to_binary(Root)},
+        {<<"SCRIPT_FILENAME">>, wf:to_binary([vhost(root, ""), FPath, "/", FScript])},
+        {<<"SCRIPT_NAME">>, wf:to_binary(["/", FScript])},
+        %% {<<"SERVER_ADDR">>, <<"">>}, % I don't now how cowboy return self ip
+        {<<"SERVER_NAME">>, wf:to_binary(vhost(server_name, wf:config(n2o_fcgi, address, "")))},
+        {<<"SERVER_PORT">>, wf:to_binary(Port)},
+        {<<"SERVER_PROTOCOL">>, ?PROTO_HTTP},
+        {<<"SERVER_SOFTWARE">>, <<"cowboy">>}] ++
         path_info_headers(Root, FPathInfo) ++
         HHttps ++
-        http_headers() ++
-        external_headers(Params) ++
+        http_headers(Params) ++
         post_headers(Params, Method).
 
 make_url_parts(#http{url = Url}) ->
@@ -117,15 +137,24 @@ post_headers(#http{has_body = Has, body_length = Len}, Method) ->
     case Has of
         true when Method =:= <<"POST">>; Method =:= <<"PUT">>; Method =:= <<"DELETE">> ->
             [{"CONTENT_TYPE", <<"application/x-www-form-urlencoded">>},
-             {"CONTENT_LENGTH", wf:to_binary(Len)}];
+                {"CONTENT_LENGTH", wf:to_binary(Len)}];
         _ -> []
     end.
 path_info_headers(Root, FPathInfo) ->
     case FPathInfo of
         [] -> [];
         _ -> [{<<"PATH_INFO">>, wf:to_binary(FPathInfo)},
-              {<<"PATH_TRANSLATED">>, wf:to_binary([Root, FPathInfo])}]
+            {<<"PATH_TRANSLATED">>, wf:to_binary([Root, FPathInfo])}]
     end.
+host() ->
+    case ?URL_PARTS#url_parts.host of
+        undefined ->
+            case cowboy_req:host_info(?REQ) of
+                {undefined, _} -> {H , _} = cowboy_req:host(?REQ), H;
+                {H , _} -> H
+            end;
+        V ->
+            V end.
 method(Params) ->
     case Params#http.method of undefined -> {M, _} = cowboy_req:method(?REQ), M; V -> wf:to_binary(string:to_upper(wf:to_list(V))) end.
 port() ->
@@ -151,15 +180,16 @@ bs(#http{body = Body} = P) ->
         E when E =:= <<>> orelse E =:= <<"">> orelse E =:= "" ->
             {empty, <<>>, P};
         B -> P2 = P#http{has_body = true, body_length = byte_size(B)},
-             {ok, B, P2}
+            {ok, B, P2}
     end.
 
--spec http_headers() -> [tuple()].
-http_headers() ->
+-spec http_headers(Params :: [tuple()]) -> [tuple()].
+http_headers(Params) ->
     {H, _} = cowboy_req:headers(?REQ),
     H1 = case external_host_header() of undefined -> H; V -> lists:keystore(<<"host">>, 1, H, V) end,
     H2 = case external_ajax_header() of undefined -> H1; V1 -> lists:keystore(<<"x-requested-with">>, 1, H1, V1) end,
-    http_headers(H2, []).
+    H3 = H2 ++ external_headers(Params),
+    http_headers(H3, []).
 http_headers([H|T], New) ->
     K = element(1, H),
     K2 = "HTTP_" ++ string:to_upper(string:join(string:tokens(wf:to_list(K), "-"), "_")),
@@ -222,7 +252,7 @@ parse_info([], I) ->
     I.
 
 rewrite(Subject) ->
-    rewrite(Subject, wf:config(n2o_fcgi, rewrite, [])).
+    rewrite(Subject, vhost(rewrite, [])).
 rewrite(Subject, [RewRule|H]) ->
     case element(1, RewRule) of
         S when S =:= Subject orelse S =:= "*" -> {true, element(2, RewRule)};
@@ -317,5 +347,5 @@ header_key_to_lower(Bit, _Acc) ->
     wf:to_binary(string:to_lower(wf:to_list(Bit))).
 
 terminate() ->
+    wf:state(vhost, []),
     wf:state(n2o_fcgi_response_headers, []).
-
