@@ -3,40 +3,49 @@
 -include_lib("stdlib/include/ms_transform.hrl").
 
 %% API
--export([init/0, send/1, stop/0]).
+-export([init/0, send/0, send/1, stop/0]).
 
 -define(PROTO_CGI, <<"CGI/1.1">>).
 -define(PROTO_HTTP, <<"HTTP/1.1">>).
 -define(DEF_FCGI_PORT, 9000).
 -define(DEF_RESP_STATUS, 200).
+-define(DEF_TIMEOUT, 60000).
 
--define(URL_PARTS, (get(url_parts))).
+-define(WS_URL_PARTS, (get(n2o_fcgi_ws_url_parts))).
 
--record(url_parts, {scheme, userInfo, host, port, path, query}).
+-type http() :: #http{}.
+-type htuple() :: {binary(), binary()}.
+
+-record(ws_url_parts, {scheme, userInfo, host, port, path, query}).
 
 %% ===========================================================
 %% API
 %% ===========================================================
 
+-spec init() -> ok | {error, term()}.
 init() ->
     case ex_fcgi:start(fcgi, wf:config(n2o_fcgi, address, localhost), wf:config(n2o_fcgi, port, ?DEF_FCGI_PORT)) of
         {ok, _Pid} -> ok;
-        {error, {already_started, _Pid}} -> ok
+        {error, {already_started, _Pid}} -> ok;
+        E -> E
     end.
 
+-spec stop() -> ok | {error, term()}.
 stop() ->
     ex_fcgi:stop(fcgi).
 
--spec send(Params :: #http{}) -> binary().
-send(Params) ->
-    wf:state(status, 200),
-    make_url_parts(Params),
-    vhosts(),
-    {Body, P1} = case bs(Params) of {ok, B, NewP} -> {B, NewP}; _ -> {<<>>, Params} end,
-    FCGIParams = get_params(P1),
+send() -> send(#http{}).
 
-    {ok, Ref} = ex_fcgi:begin_request(fcgi, responder, FCGIParams, wf:config(n2o_fcgi, timeout, 60000)),
-    case P1#http.has_body of
+-spec send(http()) -> {binary(), integer(), list()}.
+send(Http) ->
+    wf:state(status, ?DEF_RESP_STATUS),
+    make_ws_url_parts(Http),
+    vhosts(),
+    {_, Body} = bs(Http),
+    FCGIParams = get_params(Http),
+
+    {ok, Ref} = ex_fcgi:begin_request(fcgi, responder, FCGIParams, wf:config(n2o_fcgi, timeout, ?DEF_TIMEOUT)),
+    case has_body(Http) of
         true -> ex_fcgi:send(fcgi, Ref, Body);
         _ -> ok
     end,
@@ -53,8 +62,10 @@ send(Params) ->
 %% Prepare Request
 %% ===========================================================
 
+-spec vhosts() -> ok.
 vhosts() ->
-    Vs = wf:config(n2o_fcgi, vhosts, []), vhosts(Vs).
+    Vs = wf:config(n2o_fcgi, vhosts, []),
+    vhosts(Vs).
 vhosts([H|T]) ->
     S = proplists:get_value(server_name, H, ""),
     A = proplists:get_value(aliase, H, ""),
@@ -66,18 +77,19 @@ vhosts([H|T]) ->
     end;
 vhosts([]) -> wf:state(vhost, []), ok.
 
+-spec vhost(atom()) -> term().
+vhost(Key) -> vhost(Key, "").
+-spec vhost(atom(), []) -> term().
 vhost(Key, Def) ->
     proplists:get_value(Key, wf:state(vhost), Def).
 
--spec get_params(Params :: #http{}) -> term().
-get_params(Params) ->
+-spec get_params(http()) -> list().
+get_params(Http) ->
     {{PeerIP, PeerPort}, _} = cowboy_req:peer(?REQ),
-    Method = method(Params),
-    Port = port(),
     Path = path(),
     QS = qs(),
 
-    Root = vhost(root, ""),
+    Root = vhost(root),
     DefScript = wf:to_binary(vhost(index, "index.php")),
     {FPath, FScript, FPathInfo} = final_path(Path, DefScript),
 
@@ -89,65 +101,75 @@ get_params(Params) ->
         {<<"QUERY_STRING">>, QS},
         {<<"REMOTE_ADDR">>, wf:to_binary(inet:ntoa(PeerIP))},
         {<<"REMOTE_PORT">>, wf:to_binary(PeerPort)},
-        {<<"REQUEST_METHOD">>, Method},
+        {<<"REQUEST_METHOD">>, method(Http)},
         {<<"REQUEST_URI">>, <<Path/binary, (case QS of <<>> -> <<>>; V -> <<"?", V/binary>> end)/binary>>},
         {<<"DOCUMENT_ROOT">>, wf:to_binary(Root)},
-        {<<"SCRIPT_FILENAME">>, wf:to_binary([vhost(root, ""), FPath, "/", FScript])},
+        {<<"SCRIPT_FILENAME">>, wf:to_binary([vhost(root), FPath, "/", FScript])},
         {<<"SCRIPT_NAME">>, wf:to_binary(["/", FScript])},
         %% {<<"SERVER_ADDR">>, <<"">>}, % I don't now how cowboy return self ip
         {<<"SERVER_NAME">>, wf:to_binary(vhost(server_name, wf:config(n2o_fcgi, address, "")))},
-        {<<"SERVER_PORT">>, wf:to_binary(Port)},
+        {<<"SERVER_PORT">>, wf:to_binary(port())},
         {<<"SERVER_PROTOCOL">>, ?PROTO_HTTP},
         {<<"SERVER_SOFTWARE">>, <<"cowboy">>}] ++
         path_info_headers(Root, FPathInfo) ++
         HHttps ++
-        http_headers(Params) ++
-        post_headers(Params, Method).
+        http_headers(Http) ++
+        post_headers(Http).
 
-make_url_parts(#http{url = Url}) ->
-    case Url of
-        undefined -> put(url_parts, #url_parts{});
-        U ->
-            case http_uri:parse(wf:to_list(U), [{scheme_defaults, [
-                {http,80},{https,443},{ftp,21},{ssh,22},{sftp,22},{tftp,69},{ws,80},{wss,443}]}]) of
-                {ok, {Scheme, UserInfo, Host, Port, Path, Query}} ->
-                    R = #url_parts{scheme = Scheme, userInfo = UserInfo, host = Host, port = Port, path = Path, query = Query},
-                    put(url_parts, R);
-                {error, _Reason} ->
-                    put(url_parts, #url_parts{})
-            end
+-spec make_ws_url_parts(http()) -> ok.
+make_ws_url_parts(#http{url = undefined}) ->
+    wf:state(n2o_fcgi_ws_url_parts, #ws_url_parts{}), ok;
+make_ws_url_parts(#http{url = Url}) ->
+    case http_uri:parse(wf:to_list(Url), [{scheme_defaults, [
+        {http,80},{https,443},{ftp,21},{ssh,22},{sftp,22},{tftp,69},{ws,80},{wss,443}]}]) of
+        {ok, {Scheme, UserInfo, Host, Port, Path, Query}} ->
+            R = #ws_url_parts{scheme=Scheme,userInfo=UserInfo,host=Host,port=Port,path=Path,query=Query},
+            wf:state(n2o_fcgi_ws_url_parts, R), ok;
+        {error, _Reason} ->
+            wf:state(n2o_fcgi_ws_url_parts, #ws_url_parts{}), ok
     end.
 
+-spec external_headers(http()) -> list().
 external_headers(#http{headers = Hs}) ->
     case Hs of undefined -> []; _ -> Hs end.
+
+-spec external_host_header() -> htuple() | undefined.
 external_host_header() ->
-    case ?URL_PARTS#url_parts.host of
+    case ?WS_URL_PARTS#ws_url_parts.host of
         undefined -> undefined;
         Host ->
-            Port = case ?URL_PARTS#url_parts.port of P when P =:= 80 orelse P =:= 443 -> ""; P1 -> ":" ++ wf:to_list(P1) end,
+            Port = case ?WS_URL_PARTS#ws_url_parts.port of P when P =:= 80 orelse P =:= 443 -> ""; P1 -> ":" ++ wf:to_list(P1) end,
             {<<"host">>, wf:to_binary([Host, Port])}
     end.
+
+-spec external_ajax_header() -> htuple() | undefined.
 external_ajax_header() ->
-    case ?URL_PARTS#url_parts.host of
+    case ?WS_URL_PARTS#ws_url_parts.host of
         undefined -> undefined;
         _ ->
             {<<"x-requested-with">>, <<"XMLHttpRequest">>}
     end.
-post_headers(#http{has_body = Has, body_length = Len}, Method) ->
-    case Has of
-        true when Method =:= <<"POST">>; Method =:= <<"PUT">>; Method =:= <<"DELETE">> ->
+
+-spec post_headers(http()) -> [htuple()] | [].
+post_headers(Http) ->
+    case has_body(Http) of
+        true ->
             [{"CONTENT_TYPE", <<"application/x-www-form-urlencoded">>},
-                {"CONTENT_LENGTH", wf:to_binary(Len)}];
+                {"CONTENT_LENGTH", wf:to_binary(body_length())}];
         _ -> []
     end.
+
+-spec path_info_headers(string(), string()) -> [htuple()] | [].
 path_info_headers(Root, FPathInfo) ->
     case FPathInfo of
         [] -> [];
         _ -> [{<<"PATH_INFO">>, wf:to_binary(FPathInfo)},
             {<<"PATH_TRANSLATED">>, wf:to_binary([Root, FPathInfo])}]
     end.
+
+-spec host() -> binary() | undefined.
 host() ->
-    case ?URL_PARTS#url_parts.host of
+    case ?WS_URL_PARTS#ws_url_parts.host of
         undefined ->
             case cowboy_req:host_info(?REQ) of
                 {undefined, _} -> {H , _} = cowboy_req:host(?REQ), H;
@@ -155,35 +177,63 @@ host() ->
             end;
         V ->
             V end.
-method(Params) ->
-    case Params#http.method of undefined -> {M, _} = cowboy_req:method(?REQ), M; V -> wf:to_binary(string:to_upper(wf:to_list(V))) end.
-port() ->
-    case ?URL_PARTS#url_parts.port of undefined -> {Port , _} = cowboy_req:port(?REQ), Port; V -> V end.
-path() ->
-    case ?URL_PARTS#url_parts.path of undefined -> get_cowboy_path(); V -> wf:to_binary(V) end.
-qs() ->
-    case ?URL_PARTS#url_parts.query of undefined -> {Q, _} = cowboy_req:qs(?REQ), Q; V -> wf:to_binary(string:strip(V, left, $?)) end.
-bs(#http{body = Body} = P) ->
-    case Body of
-        undefined ->
-            case cowboy_req:has_body(?REQ) of
-                true -> case cowboy_req:body(?REQ) of
-                            {ok, CB, _} ->
-                                P1 = P#http{has_body = true, body_length = byte_size(CB)},
-                                {ok, CB, P1};
-                            _ ->
-                                {empty, <<>>, P}
-                        end;
-                _ ->
-                    {empty, <<>>, P}
-            end;
-        E when E =:= <<>> orelse E =:= <<"">> orelse E =:= "" ->
-            {empty, <<>>, P};
-        B -> P2 = P#http{has_body = true, body_length = byte_size(B)},
-            {ok, B, P2}
+
+-spec method(http()) -> binary().
+method(Http) ->
+    case Http#http.method of undefined -> {M, _} = cowboy_req:method(?REQ), M; V -> to_upper(V) end.
+
+-spec has_body(http()) -> true | false.
+has_body(Http) ->
+    case method(Http) of
+        M when M =:= <<"POST">>; M =:= <<"PUT">>; M =:= <<"PATCH">> -> true;
+        _ -> false
     end.
 
--spec http_headers(Params :: [tuple()]) -> [tuple()].
+-spec body_length() -> non_neg_integer().
+body_length() ->
+    case wf:state(n2o_fcgi_body_length) of
+        L when is_integer(L) -> L;
+        _ ->
+            case cowboy_req:body_length(?REQ) of
+                {undefined, _} -> 0;
+                {CL, _} -> CL
+            end
+    end.
+
+-spec port() -> inet:port_number().
+port() ->
+    case ?WS_URL_PARTS#ws_url_parts.port of undefined -> {P, _} = cowboy_req:port(?REQ), P; V -> V end.
+
+-spec path() -> binary().
+path() ->
+    case ?WS_URL_PARTS#ws_url_parts.path of undefined -> get_cowboy_path(); V -> wf:to_binary(V) end.
+
+-spec qs() -> binary().
+qs() ->
+    case ?WS_URL_PARTS#ws_url_parts.query of
+        undefined -> {Q, _} = cowboy_req:qs(?REQ), Q;
+        V -> wf:to_binary(string:strip(V, left, $?))
+    end.
+
+-spec bs(http()) -> {ok, binary()} | {empty, <<>>}.
+bs(#http{body = undefined}) ->
+    case cowboy_req:has_body(?REQ) of
+        true ->
+            case cowboy_req:body(?REQ) of
+                {ok, CB, _} -> {ok, CB};
+                _ -> {empty, <<>>}
+            end;
+        _ -> {empty, <<>>}
+    end;
+bs(#http{body = B}) when B =:= <<>> orelse B =:= "" ->
+    {empty, <<>>};
+bs(#http{body = B} = Http) ->
+    case has_body(Http) of
+        true -> wf:state(n2o_fcgi_body_length, byte_size(B)), {ok, B};
+        _ -> {empty, <<>>}
+    end.
+
+-spec http_headers(http()) -> [htuple()].
 http_headers(Params) ->
     {H, _} = cowboy_req:headers(?REQ),
     H1 = case external_host_header() of undefined -> H; V -> lists:keystore(<<"host">>, 1, H, V) end,
@@ -197,6 +247,7 @@ http_headers([H|T], New) ->
 http_headers([], New) ->
     New.
 
+-spec get_cowboy_path() -> binary().
 get_cowboy_path() ->
     case cowboy_req:path_info(?REQ) of
         {undefined, _} ->
@@ -207,6 +258,7 @@ get_cowboy_path() ->
         {P, _} -> <<"/", (binary_join(P, <<"/">>))/binary>>
     end.
 
+-spec final_path(binary(), string()) -> {string(), string(), string()}.
 final_path(CowboyPath, DefScript) ->
     {Path, Script, PathInfo} =
         case explode_path(CowboyPath) of
@@ -224,7 +276,10 @@ final_path(CowboyPath, DefScript) ->
         end,
     {FPath, FScript, PathInfo}.
 
--spec explode_path(Path :: binary()) -> {path, NewPath :: list()} | {path_parts, NewPath :: list(), Script :: list(), PathInfo :: list()}.
+-spec explode_path(Path :: binary()) -> {path, NewPath} | {path_parts, NewPath, Script, PathInfo} when
+    NewPath :: string(),
+    Script :: string(),
+    PathInfo :: string().
 explode_path(P) ->
     Path = wf:to_list(P),
     case string:str(Path, ".") of
@@ -235,22 +290,29 @@ explode_path(P) ->
             {path_parts, P1, H, I}
     end.
 
--spec parse_path(Tokens :: [list()], Acc :: list()) -> {NewPath :: list(), Script :: list(), PathInfo :: list()}.
+-spec parse_path(list(), list()) -> {NewPath, Script, PathInfo} when
+    NewPath :: string(),
+    Script :: string() | [],
+    PathInfo :: string() | [].
 parse_path([], []) ->
     {[], [], []};
 parse_path([H|T], P) ->
     case string:str(H, ".") of
         0 -> parse_path(T, P ++ "/" ++ H);
-        _ -> {P, H, parse_info(T, [])}
+        _ -> {P, H, parse_info(T)}
     end;
 parse_path([], P) ->
     {P, [], []}.
 
+-spec parse_info(list()) -> string().
+parse_info(L) ->
+    parse_info(L, []).
 parse_info([H|T], I) ->
     parse_info(T, I ++ "/" ++ H);
 parse_info([], I) ->
     I.
 
+-spec rewrite(string()) -> {true, string()} | {false, string()}.
 rewrite(Subject) ->
     rewrite(Subject, vhost(rewrite, [])).
 rewrite(Subject, [RewRule|H]) ->
@@ -265,6 +327,7 @@ rewrite(Subject, []) ->
 %% Response
 %% ===========================================================
 
+-spec ret() -> binary().
 ret() ->
     receive
         {ex_fcgi, _Ref, Messages} ->
@@ -276,6 +339,7 @@ ret() ->
             <<>>
     end.
 
+-spec stdout(list()) -> binary().
 stdout(Messages) -> stdout(Messages, <<>>).
 stdout([{stderr, _Bin} | Messages], Acc) ->
     stdout(Messages, Acc);
@@ -293,9 +357,11 @@ stdout([{end_request, request_complete, 0}], Acc) ->
 stdout([], Acc) ->
     <<Acc/binary, (ret())/binary>>.
 
+-spec decode_result(Data) -> {ok, Headers, Body} | {error, term()} when
+    Data :: binary(),
+    Headers :: list(),
+    Body :: binary().
 decode_result(Data) -> decode_result(Data, []).
-
--spec decode_result(Data::binary(), AccH::list()) -> {ok, Headers::list(), Body::binary()} | {error, Reason::term()}.
 decode_result(Data, AccH) ->
     case erlang:decode_packet(httph_bin, Data, []) of
         {ok, http_eoh, Rest} -> {ok, AccH, Rest};
@@ -322,10 +388,13 @@ set_header_to_cowboy(Hs, _Len) ->
             set_header_to_cowboy(Hs)
     end.
 set_header_to_cowboy([H|T]) ->
-    wf:header(header_key_to_lower(element(1,H), <<>>), element(2,H)),
+    wf:header(to_lower(element(1,H)), element(2,H)),
     set_header_to_cowboy(T);
 set_header_to_cowboy([]) -> ok.
 
+%% ===========================================================
+%%
+%% ===========================================================
 
 -spec binary_join([binary()], binary()) -> binary().
 binary_join([], _Sep) ->
@@ -337,15 +406,22 @@ binary_join([Head|Tail], Sep) ->
 
 %% @todo If using lib of Cowboy, then...
 %% -include_lib("cowlib/include/cow_inline.hrl").
-%% header_key_to_lower(<<>>, Acc) ->
+%% to_lower(<<>>, Acc) ->
 %%     Acc;
-%% header_key_to_lower(<<C, Rest/bits>>, Acc) ->
+%% to_lower(<<C, Rest/bits>>, Acc) ->
 %%     case C of
-%%         ?INLINE_LOWERCASE(header_key_to_lower, Rest, Acc)
+%%         ?INLINE_LOWERCASE(to_lower, Rest, Acc)
 %% end.
-header_key_to_lower(Bit, _Acc) ->
+-spec to_upper(binary() | string() | atom()) -> binary().
+to_lower(Bit) ->
     wf:to_binary(string:to_lower(wf:to_list(Bit))).
+
+-spec to_upper(binary() | string() | atom()) -> binary().
+to_upper(V) ->
+    wf:to_binary(string:to_upper(wf:to_list(V))).
 
 terminate() ->
     wf:state(vhost, []),
+    wf:state(n2o_fcgi_ws_url_parts, undefined),
+    wf:state(n2o_fcgi_body_length, undefined),
     wf:state(n2o_fcgi_response_headers, []).

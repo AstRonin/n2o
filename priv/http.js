@@ -1,11 +1,6 @@
 try { module.exports = {http:http}; } catch (e) { }
 
-/*var httpSend = {
-                url:url,
-                returnType:'json'
-            };
-*/
-// Template: http.send(url).done(function(data, headers) {console.log(data); console.log(headers)});
+// Template: http.send(url + '?' + 'test1=1&test2=2', 'GET', '', {SomeHeader:'some header'}).done(function(data, status, headers) {console.log(data););
 
 var http = {
     receiveData:null,
@@ -43,9 +38,7 @@ var http = {
             bin($.settings.url),
             bin($.settings.method||'GET'),
             bin($.settings.body||''),
-            tList,
-            atom(($.settings.body?'true':'false')),
-            number(($.settings.body?$.settings.body.length:0)) )
+            tList)
         ));
         return $;
     },
@@ -83,5 +76,4 @@ var http = {
             .replace(/\t/g, "\\t")
             .replace(/\f/g, "\\f");
     }
-
 };

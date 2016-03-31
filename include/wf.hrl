@@ -40,6 +40,6 @@
 
 % HTTP
 
--record(http,     { url, method, body, headers = [], has_body = false, body_length = 0 }).
+-record(http,     { url, method, body, headers = [] }).
 
 -endif.
