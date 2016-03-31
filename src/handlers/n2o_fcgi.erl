@@ -412,7 +412,7 @@ binary_join([Head|Tail], Sep) ->
 %%     case C of
 %%         ?INLINE_LOWERCASE(to_lower, Rest, Acc)
 %% end.
--spec to_upper(binary() | string() | atom()) -> binary().
+-spec to_lower(binary() | string() | atom()) -> binary().
 to_lower(Bit) ->
     wf:to_binary(string:to_lower(wf:to_list(Bit))).
 
