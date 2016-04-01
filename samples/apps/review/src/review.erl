@@ -26,7 +26,7 @@ n2o()    ->   { dir, "deps/n2o/priv",           mime() }.
 mime()   -> [ { mimetypes, cow_mimetypes, all   } ].
 port()   -> [ { port, wf:config(n2o,port,8000)  } ].
 fcgi()   ->
-    case wf:config(n2o_fcgi, root) of
+    case wf:config(n2o_fcgi, vhosts) of
         undefined -> skip;
         _ -> n2o_fcgi:init()
     end.

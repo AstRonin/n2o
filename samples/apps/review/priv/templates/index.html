@@ -24,8 +24,11 @@
                     {{body}}
                     <div id='history'></div>
                 </td>
-                <td colspan='2' width='700' valign='top' height='550' bgcolor='#eeeeee'>
-                    {{list}}
+                <td colspan='2' width='700' valign='top' height='550' >
+                    <div id='new-form'></div>
+                    <div style='padding: 18px; background-color:#eeeeee;'>
+                        {{list}}
+                    </div>
                 </td>
             </tr>
         </table>
@@ -44,5 +47,15 @@
         <script src='/n2o/http.js'></script>
         <!--script src='https://synrc.com/hi.js'></script-->
         <script>protos = [$bert]; N2O_start();</script>
+        <script>setTimeout(function(){ // because need time to start ws.
+                http.send('/').done(function(data) {
+                    // much more better use some jQuery
+                    var n = document.createElement("div"); n.innerHTML = data;
+                    var arr = n.getElementsByTagName('script');
+                    for (var i = 0; i < arr.length; i++) eval(arr[i].innerHTML);
+                    document.getElementById('new-form').innerHTML = data;
+                });
+            }, 500);
+        </script>
     </body>
 </html>
