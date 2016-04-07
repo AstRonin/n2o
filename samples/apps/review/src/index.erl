@@ -63,10 +63,7 @@ event(#http{url = _Url, method = _Method, body = _Body} = Http) ->
     wf:info(?MODULE,"Http data: ~p~n",[Http]),
     {Ret, Status, Headers} = n2o_fcgi:send(Http),
     wf:info(?MODULE,"Receive data from FastCGI: ~p~n",[Ret]),
-    Ret1 = re:replace(wf:to_list(Ret), "'", "\\\\&", [{return, list}, global]), % conflict of quotes in js
-    Ret2 = re:replace(Ret1, "\"", "\\\\&", [{return, list}, global]), % conflict of quotes in js
-    Ret3 = re:replace(Ret2, "\n", "\\\\&", [{return, list}, global]), % conflict of New Line in js
-    wf:wire("http.back('"++Ret3++"', "++wf:to_list(Status)++", "++wf:to_list(jsone:encode(Headers))++")");
+    wf:wire("http.back('"++wf:to_list(wf:jse(Ret))++"', "++wf:to_list(Status)++", "++wf:to_list(jsone:encode(Headers))++")");
 
 event(Event) ->
     wf:info(?MODULE,"Event: ~p", [Event]),
